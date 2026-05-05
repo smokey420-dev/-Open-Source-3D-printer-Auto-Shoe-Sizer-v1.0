@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OpenSource 3D Shoe Sizer</title>
+    <!-- Dependencies: Three.js Core, STL Loader, and Orbit Controls -->
+    <script src="https://cloudflare.com"></script>
+    <script src="https://jsdelivr.net"></script>
+    <script src="https://jsdelivr.net"></script>
+    <script src="https://jsdelivr.net"></script>
+    
+    <style>
+        :root { --accent: #00ffcc; --bg: #121212; }
+        body { margin: 0; background: var(--bg); color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; overflow: hidden; }
+        #sidebar { width: 350px; background: #1a1a1a; padding: 25px; border-right: 1px solid #333; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; }
+        .card { background: #252525; padding: 15px; border-radius: 10px; border: 1px solid #444; }
+        h2 { margin-top: 0; color: var(--accent); font-size: 1.2rem; }
+        input[type="file"] { width: 100%; margin: 10px 0; font-size: 0.8rem; }
+        .btn { background: var(--accent); color: black; border: none; padding: 12px; border-radius: 5px; font-weight: bold; cursor: pointer; width: 100%; transition: 0.2s; }
+        .btn:hover { background: #00ccaa; transform: translateY(-2px); }
+        .btn-download { background: #ffffff; margin-top: 10px; }
+        #viewer { flex-grow: 1; position: relative; }
+        .stats { font-family: monospace; font-size: 0.8rem; color: #aaa; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Shoe Sizer v1.0</h2>
+    
+    <div class="card">
+        <label>1. Foot Scan (STL)</label>
+        <input type="file" id="footInput" accept=".stl" onchange="handleUpload(event, 'foot')">
+        <div id="footStats" class="stats">Waiting for scan...</div>
+    </div>
+
+    <div class="card">
+        <label>2. Shoe Template (STL)</label>
+        <input type="file" id="shoeInput" accept=".stl" onchange="handleUpload(event, 'shoe')">
+        <div id="shoeStats" class="stats">Waiting for model...</div>
+    </div>
+
+    <div class="card">
+        <label>Comfort Offset (mm)</label>
+        <input type="number" id="offset" value="5" step="1" style="width: 60px; background: #333; color: white; border: 1px solid #555; padding: 5px; border-radius: 4px;">
+    </div>
+
+    <button class="btn" onclick="performAutoFit()">AUTOMATIC FIT</button>
+    <button class="btn btn-download" onclick="exportSTL()">DOWNLOAD SIZED STL</button>
+    
+    <p style="font-size: 0.7rem; color: #666;">Note: This tool uses non-uniform lattice scaling to preserve sole thickness while matching foot length/width.</p>
+</div>
+
+<div id="viewer"></div>
+
+<script>
+    let scene, camera, renderer, controls, footMesh, shoeMesh;
+    const loader = new THREE.STLLoader();
+    const exporter = new THREE.STLExporter();
+
+    function init() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(45, (window.innerWidth - 350) / window.innerHeight, 1, 5000);
+        camera.position.set(400, 400, 400);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth - 350, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('viewer').appendChild(renderer.domElement);
+
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        
+        const ambientLight = new THREE.AmbientLight(0x404040, 2);
+        scene.add(ambientLight);
+        const light = new THREE.DirectionalLight(0xffffff, 1.5);
+        light.position.set(100, 500, 100);
+        scene.add(light);
+
+        window.addEventListener('resize', onWindowResize, false);
+        animate();
+    }
+
+    function handleUpload(event, type) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const geometry = loader.parse(e.target.result);
+            geometry.computeBoundingBox();
+            geometry.center(); // CRITICAL: Centers the scan so scaling happens from center
+
+            const material = type === 'foot' ? 
+                new THREE.MeshPhongMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.4 }) : 
+                new THREE.MeshPhongMaterial({ color: 0xffffff, wireframe: true });
+            
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            if (type === 'foot') {
+                if (footMesh) scene.remove(footMesh);
+                footMesh = mesh;
+                updateStats('footStats', geometry);
+            } else {
+                if (shoeMesh) scene.remove(shoeMesh);
+                shoeMesh = mesh;
+                updateStats('shoeStats', geometry);
+            }
+            scene.add(mesh);
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    function updateStats(id, geo) {
+        const size = new THREE.Vector3();
+        geo.boundingBox.getSize(size);
+        document.getElementById(id).innerHTML = `L: ${size.x.toFixed(1)}mm | W: ${size.z.toFixed(1)}mm`;
+    }
+
+    function performAutoFit() {
+        if (!footMesh || !shoeMesh) { alert("Load both files first!"); return; }
+
+        const footBox = new THREE.Box3().setFromObject(footMesh);
+        const shoeBox = new THREE.Box3().setFromObject(shoeMesh);
+        const fSize = new THREE.Vector3(); footBox.getSize(fSize);
+        const sSize = new THREE.Vector3(); shoeBox.getSize(sSize);
+
+        const offset = parseFloat(document.getElementById('offset').value);
+
+        // Logic: Length (X) and Width (Z) scale to match foot. 
+        // Height (Y) remains 1.0 to keep sole thickness consistent.
+        const scaleX = (fSize.x + offset) / sSize.x;
+        const scaleZ = (fSize.z + (offset/2)) / sSize.z;
+
+        shoeMesh.scale.set(scaleX, 1, scaleZ);
+    }
+
+    function exportSTL() {
+        if (!shoeMesh) return;
+        const result = exporter.parse(shoeMesh);
+        const blob = new Blob([result], { type: 'text/plain' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'Sized_Shoe_ReadyToPrint.stl';
+        link.click();
+    }
+
+    function onWindowResize() {
+        camera.aspect = (window.innerWidth - 350) / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth - 350, window.innerHeight);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    init();
+</script>
+</body>
+</html>
